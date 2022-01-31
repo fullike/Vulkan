@@ -5,20 +5,29 @@ layout (location = 0) in vec4 inPos;
 layout (location = 1) in vec3 inNormal;
 layout (location = 2) in vec3 inColor;
 
-// Instanced attributes
-layout (location = 4) in vec3 instancePos;
-layout (location = 5) in float instanceScale;
-
 layout (binding = 0) uniform UBO 
 {
 	mat4 projection;
 	mat4 modelview;
 } ubo;
 
+struct InstanceData
+{
+    vec3 pos;
+    uint idx;
+};
+
+layout (binding = 2) buffer Instances
+{
+    InstanceData instances[];
+};
+
 layout (location = 0) out vec3 outNormal;
 layout (location = 1) out vec3 outColor;
 layout (location = 2) out vec3 outViewVec;
 layout (location = 3) out vec3 outLightVec;
+layout (location = 4) out vec2 outUV;
+layout (location = 5) out uint outInstanceId;
 
 out gl_PerVertex
 {
@@ -27,11 +36,12 @@ out gl_PerVertex
 
 void main() 
 {
+    outUV = inPos.xy;
 	outColor = inColor;
-		
 	outNormal = inNormal;
+    outInstanceId = gl_InstanceIndex;
 	
-	vec4 pos = vec4((inPos.xyz * instanceScale) + instancePos, 1.0);
+    vec4 pos = vec4((inPos.xyz * 1.f) + instances[gl_InstanceIndex].pos, 1.0);
 
 	gl_Position = ubo.projection * ubo.modelview * pos;
 	

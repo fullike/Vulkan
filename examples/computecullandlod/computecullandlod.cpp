@@ -32,10 +32,13 @@ public:
 	// The model contains multiple versions of a single object with different levels of detail
 	vkglTF::Model lodModel;
 
+	// For bindless textures
+	std::vector<vks::Texture2D> textures;
+
 	// Per-instance data block
 	struct InstanceData {
 		glm::vec3 pos;
-		float scale;
+		uint32_t texId;
 	};
 
 	// Contains the instanced data
@@ -103,6 +106,9 @@ public:
 
 	~VulkanExample()
 	{
+		for (auto& texture : textures) {
+			texture.destroy();
+		}
 		vkDestroyPipeline(device, pipelines.plants, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -163,16 +169,21 @@ public:
 			// Mesh containing the LODs
 			vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.plants);
 			vkCmdBindVertexBuffers(drawCmdBuffers[i], VERTEX_BUFFER_BIND_ID, 1, &lodModel.vertices.buffer, offsets);
-			vkCmdBindVertexBuffers(drawCmdBuffers[i], INSTANCE_BUFFER_BIND_ID, 1, &instanceBuffer.buffer, offsets);
 
 			vkCmdBindIndexBuffer(drawCmdBuffers[i], lodModel.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
 
 			if (vulkanDevice->features.multiDrawIndirect)
 			{
 				vkCmdDrawIndexedIndirect(drawCmdBuffers[i], indirectCommandsBuffer.buffer, 0, indirectCommands.size(), sizeof(VkDrawIndexedIndirectCommand));
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+				LOGW("multiDrawIndirect supported, will it be fast?");
+#endif
 			}
 			else
 			{
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+				LOGW("multiDrawIndirect not supported, will be very slow");
+#endif
 				// If multi draw is not available, we must issue separate draw commands
 				for (auto j = 0; j < indirectCommands.size(); j++)
 				{
@@ -192,6 +203,17 @@ public:
 	{
 		const uint32_t glTFLoadingFlags = vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::PreMultiplyVertexColors | vkglTF::FileLoadingFlags::FlipY;
 		lodModel.loadFromFile(getAssetPath() + "models/suzanne_lods.gltf", vulkanDevice, queue, glTFLoadingFlags);
+		auto loadTex = [this](const std::string& filePath)
+		{
+			vks::Texture2D Tex;
+			Tex.loadFromFile(getAssetPath() + filePath, VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
+			textures.push_back(Tex);
+		};
+		loadTex("textures/01.ktx");
+		loadTex("textures/02.ktx");
+		loadTex("textures/03.ktx");
+		loadTex("textures/04.ktx");
+		loadTex("textures/05.ktx");
 	}
 
 	void buildComputeCommandBuffer()
@@ -252,7 +274,8 @@ public:
 	{
 		std::vector<VkDescriptorPoolSize> poolSizes = {
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4)
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(textures.size()))
 		};
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
@@ -263,6 +286,8 @@ public:
 		std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {
 			// Binding 0: Vertex shader uniform buffer
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT,0),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 1, static_cast<uint32_t>(textures.size())),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT| VK_SHADER_STAGE_FRAGMENT_BIT,2),
 		};
 		VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorLayout, nullptr, &descriptorSetLayout));
@@ -276,10 +301,32 @@ public:
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayout, 1);
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
 
-		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
-			// Binding 0: Vertex shader uniform buffer
-			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformData.scene.descriptor),
-		};
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets(3);
+
+		writeDescriptorSets[0] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformData.scene.descriptor);
+
+		// Image descriptors for the texture array
+		std::vector<VkDescriptorImageInfo> textureDescriptors(textures.size());
+		for (size_t i = 0; i < textures.size(); i++) {
+			textureDescriptors[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			textureDescriptors[i].sampler = textures[i].sampler;;
+			textureDescriptors[i].imageView = textures[i].view;
+		}
+
+		// [POI] Second and final descriptor is a texture array
+		// Unlike an array texture, these are adressed like typical arrays
+		writeDescriptorSets[1] = {};
+		writeDescriptorSets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writeDescriptorSets[1].dstBinding = 1;
+		writeDescriptorSets[1].dstArrayElement = 0;
+		writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writeDescriptorSets[1].descriptorCount = static_cast<uint32_t>(textures.size());
+		writeDescriptorSets[1].pBufferInfo = 0;
+		writeDescriptorSets[1].dstSet = descriptorSet;
+		writeDescriptorSets[1].pImageInfo = textureDescriptors.data();
+
+		writeDescriptorSets[2] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2, &instanceBuffer.descriptor),
+
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 	}
 
@@ -295,8 +342,6 @@ public:
 		bindingDescriptions = {
 		    // Binding point 0: Mesh vertex layout description at per-vertex rate
 		    vks::initializers::vertexInputBindingDescription(VERTEX_BUFFER_BIND_ID, sizeof(vkglTF::Vertex), VK_VERTEX_INPUT_RATE_VERTEX),
-		    // Binding point 1: Instanced data at per-instance rate
-		    vks::initializers::vertexInputBindingDescription(INSTANCE_BUFFER_BIND_ID, sizeof(InstanceData), VK_VERTEX_INPUT_RATE_INSTANCE)
 		};
 
 		// Vertex attribute bindings
@@ -306,10 +351,6 @@ public:
 		    vks::initializers::vertexInputAttributeDescription(VERTEX_BUFFER_BIND_ID, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(vkglTF::Vertex, pos)),	// Location 0: Position
 		    vks::initializers::vertexInputAttributeDescription(VERTEX_BUFFER_BIND_ID, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(vkglTF::Vertex, normal)),	// Location 1: Normal
 		    vks::initializers::vertexInputAttributeDescription(VERTEX_BUFFER_BIND_ID, 2, VK_FORMAT_R32G32B32_SFLOAT, offsetof(vkglTF::Vertex, color)),	// Location 2: Texture coordinates
-		    // Per-Instance attributes
-		    // These are fetched for each instance rendered
-		    vks::initializers::vertexInputAttributeDescription(INSTANCE_BUFFER_BIND_ID, 4, VK_FORMAT_R32G32B32_SFLOAT, offsetof(InstanceData, pos)),	// Location 4: Position
-		    vks::initializers::vertexInputAttributeDescription(INSTANCE_BUFFER_BIND_ID, 5, VK_FORMAT_R32_SFLOAT, offsetof(InstanceData, scale)),		// Location 5: Scale
 		};
 		inputState.pVertexBindingDescriptions = bindingDescriptions.data();
 		inputState.pVertexAttributeDescriptions = attributeDescriptions.data();
@@ -406,7 +447,7 @@ public:
 				{
 					uint32_t index = x + y * OBJECT_COUNT + z * OBJECT_COUNT * OBJECT_COUNT;
 					instanceData[index].pos = glm::vec3((float)x, (float)y, (float)z) - glm::vec3((float)OBJECT_COUNT / 2.0f);
-					instanceData[index].scale = 2.0f;
+					instanceData[index].texId = rand() % 5;
 				}
 			}
 		}

@@ -60,7 +60,11 @@ task copyTask {
        include 'suzanne_lods.gltf'
     }
 
-
+    copy {
+        from '../../../data/textures'
+        into 'assets/textures'
+        include '0*.ktx'
+    }
 }
 
 preBuild.dependsOn copyTask

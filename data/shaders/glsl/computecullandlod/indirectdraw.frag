@@ -21,9 +21,16 @@ layout (binding = 2) buffer Instances
     InstanceData instances[];
 };
 
+layout (binding = 3) buffer InstanceIds
+{
+    uint ids[];
+};
+
 void main()
 {
-    vec3 color = texture(textures[instances[inInstanceId].idx], inUV.xy).rgb;
+    uint idx = ids[inInstanceId];
+    uint texId = instances[idx].idx;
+    vec3 color = texture(textures[texId], inUV.xy).rgb;
 	vec3 N = normalize(inNormal);
 	vec3 L = normalize(inLightVec);
 	vec3 ambient = vec3(0.25);

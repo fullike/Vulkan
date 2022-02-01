@@ -22,6 +22,11 @@ layout (binding = 2) buffer Instances
     InstanceData instances[];
 };
 
+layout (binding = 3) buffer InstanceIds
+{
+	uint ids[];
+};
+
 layout (location = 0) out vec3 outNormal;
 layout (location = 1) out vec3 outColor;
 layout (location = 2) out vec3 outViewVec;
@@ -41,7 +46,9 @@ void main()
 	outNormal = inNormal;
     outInstanceId = gl_InstanceIndex;
 	
-    vec4 pos = vec4((inPos.xyz * 1.f) + instances[gl_InstanceIndex].pos, 1.0);
+    uint idx = ids[gl_InstanceIndex];
+	
+    vec4 pos = vec4((inPos.xyz * 1.f) + instances[idx].pos, 1.0);
 
 	gl_Position = ubo.projection * ubo.modelview * pos;
 	

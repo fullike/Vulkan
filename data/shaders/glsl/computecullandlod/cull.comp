@@ -5,7 +5,7 @@ layout (constant_id = 0) const int MAX_LOD_LEVEL = 5;
 struct InstanceData 
 {
 	vec3 pos;
-	float scale;
+	uint tex;
 };
 
 // Binding 0: Instance input data for culling
@@ -25,7 +25,7 @@ struct IndexedIndirectCommand
 };
 
 // Binding 1: Multi draw output
-layout (binding = 1, std430) writeonly buffer IndirectDraws
+layout (binding = 1, std430) buffer IndirectDraws
 {
 	IndexedIndirectCommand indirectDraws[ ];
 };
@@ -46,17 +46,9 @@ layout (binding = 3) buffer UBOOut
 	uint lodCount[MAX_LOD_LEVEL + 1];
 } uboOut;
 
-// Binding 4: level-of-detail information
-struct LOD
+layout(binding = 4) buffer InstanceIds
 {
-	uint firstIndex;
-	uint indexCount;
-	float distance;
-	float _pad0;
-};
-layout (binding = 4) readonly buffer LODs
-{
-	LOD lods[ ];
+	uint ids[];
 };
 
 layout (local_size_x = 16) in;
@@ -93,28 +85,11 @@ void main()
 	// Check if object is within current viewing frustum
 	if (frustumCheck(pos, 1.0))
 	{
-		indirectDraws[idx].instanceCount = 1;
-		
-		// Increase number of indirect draw counts
-		atomicAdd(uboOut.drawCount, 1);
-
-		// Select appropriate LOD level based on distance to camera
-		uint lodLevel = MAX_LOD_LEVEL;
-		for (uint i = 0; i < MAX_LOD_LEVEL; i++)
-		{
-			if (distance(instances[idx].pos.xyz, ubo.cameraPos.xyz) < lods[i].distance) 
-			{
-				lodLevel = i;
-				break;
-			}
-		}
-		indirectDraws[idx].firstIndex = lods[lodLevel].firstIndex;
-		indirectDraws[idx].indexCount = lods[lodLevel].indexCount;
-		// Update stats
-		atomicAdd(uboOut.lodCount[lodLevel], 1);
-	}
-	else
-	{
-		indirectDraws[idx].instanceCount = 0;
-	}
+        atomicAdd(uboOut.drawCount, 1);
+        uint lod = uint(floor(distance(instances[idx].pos.xyz, ubo.cameraPos.xyz) / 5.f));
+        uint countIndex = atomicAdd(indirectDraws[lod].instanceCount, 1);
+        uint instanceIndex = indirectDraws[lod].firstInstance + countIndex;
+        ids[instanceIndex] = idx;
+        atomicAdd(uboOut.lodCount[lod], 1);
+    }
 }

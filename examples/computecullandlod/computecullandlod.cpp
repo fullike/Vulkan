@@ -44,7 +44,9 @@ public:
 	// Contains the instanced data
 	vks::Buffer instanceBuffer;
 	// Contains the indirect drawing commands
+	vks::Buffer clearCommandsBuffer;
 	vks::Buffer indirectCommandsBuffer;
+	vks::Buffer indirectInstanceIdsBuffer;
 	vks::Buffer indirectDrawCountBuffer;
 
 	// Indirect draw statistics (updated via compute)
@@ -77,7 +79,6 @@ public:
 
 	// Resources for the compute part of the example
 	struct {
-		vks::Buffer lodLevelsBuffers;				// Contains index start and counts for the different lod levels
 		VkQueue queue;								// Separate queue for compute commands (queue family may differ from the one used for graphics)
 		VkCommandPool commandPool;					// Use a separate command pool (queue family may differ from the one used for graphics)
 		VkCommandBuffer commandBuffer;				// Command buffer storing the dispatch commands and barriers
@@ -113,10 +114,12 @@ public:
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		instanceBuffer.destroy();
+		clearCommandsBuffer.destroy();
 		indirectCommandsBuffer.destroy();
+		indirectInstanceIdsBuffer.destroy();
 		uniformData.scene.destroy();
 		indirectDrawCountBuffer.destroy();
-		compute.lodLevelsBuffers.destroy();
+		
 		vkDestroyPipelineLayout(device, compute.pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, compute.descriptorSetLayout, nullptr);
 		vkDestroyPipeline(device, compute.pipeline, nullptr);
@@ -243,6 +246,12 @@ public:
 		vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipeline);
 		vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
+		VkBufferCopy indirectCopy;
+		indirectCopy.dstOffset = 0;
+		indirectCopy.size = indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand);
+		indirectCopy.srcOffset = 0;
+		vkCmdCopyBuffer(compute.commandBuffer, clearCommandsBuffer.buffer, indirectCommandsBuffer.buffer, 1, &indirectCopy);
+
 		// Dispatch the compute job
 		// The compute shader will do the frustum culling and adjust the indirect draw calls depending on object visibility.
 		// It also determines the lod to use depending on distance to the viewer.
@@ -274,7 +283,7 @@ public:
 	{
 		std::vector<VkDescriptorPoolSize> poolSizes = {
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6),
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(textures.size()))
 		};
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
@@ -287,7 +296,8 @@ public:
 			// Binding 0: Vertex shader uniform buffer
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT,0),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 1, static_cast<uint32_t>(textures.size())),
-			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT| VK_SHADER_STAGE_FRAGMENT_BIT,2),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,2),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,3),
 		};
 		VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorLayout, nullptr, &descriptorSetLayout));
@@ -301,7 +311,7 @@ public:
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayout, 1);
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
 
-		std::vector<VkWriteDescriptorSet> writeDescriptorSets(3);
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets(4);
 
 		writeDescriptorSets[0] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformData.scene.descriptor);
 
@@ -325,8 +335,8 @@ public:
 		writeDescriptorSets[1].dstSet = descriptorSet;
 		writeDescriptorSets[1].pImageInfo = textureDescriptors.data();
 
-		writeDescriptorSets[2] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2, &instanceBuffer.descriptor),
-
+		writeDescriptorSets[2] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2, &instanceBuffer.descriptor);
+		writeDescriptorSets[3] = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &indirectInstanceIdsBuffer.descriptor);
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 	}
 
@@ -390,24 +400,18 @@ public:
 	{
 		objectCount = OBJECT_COUNT * OBJECT_COUNT * OBJECT_COUNT;
 
-		vks::Buffer stagingBuffer;
-
 		std::vector<InstanceData> instanceData(objectCount);
-		indirectCommands.resize(objectCount);
+		indirectCommands.resize(lodModel.nodes.size());
 
-		// Indirect draw commands
-		for (uint32_t x = 0; x < OBJECT_COUNT; x++)
+		uint32_t index = 0;
+		for (auto node : lodModel.nodes)
 		{
-			for (uint32_t y = 0; y < OBJECT_COUNT; y++)
-			{
-				for (uint32_t z = 0; z < OBJECT_COUNT; z++)
-				{
-					uint32_t index = x + y * OBJECT_COUNT + z * OBJECT_COUNT * OBJECT_COUNT;
-					indirectCommands[index].instanceCount = 1;
-					indirectCommands[index].firstInstance = index;
-					// firstIndex and indexCount are written by the compute shader
-				}
-			}
+			indirectCommands[index].indexCount = node->mesh->primitives[0]->indexCount;
+			indirectCommands[index].instanceCount = 0;
+			indirectCommands[index].firstIndex = node->mesh->primitives[0]->firstIndex;
+			indirectCommands[index].vertexOffset = 0;
+			indirectCommands[index].firstInstance = objectCount * index;
+			index++;
 		}
 
 		indirectStats.drawCount = static_cast<uint32_t>(indirectCommands.size());
@@ -415,7 +419,7 @@ public:
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&stagingBuffer,
+			&clearCommandsBuffer,
 			indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand),
 			indirectCommands.data()));
 
@@ -423,11 +427,15 @@ public:
 			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			&indirectCommandsBuffer,
-			stagingBuffer.size));
+			indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand)));
 
-		vulkanDevice->copyBuffer(&stagingBuffer, &indirectCommandsBuffer, queue);
+	//	vulkanDevice->copyBuffer(&stagingBuffer, &indirectCommandsBuffer, queue);
 
-		stagingBuffer.destroy();
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&indirectInstanceIdsBuffer,
+			objectCount * lodModel.nodes.size() * sizeof(uint32_t)));
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -451,6 +459,8 @@ public:
 				}
 			}
 		}
+		
+		vks::Buffer stagingBuffer;
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -468,7 +478,7 @@ public:
 		vulkanDevice->copyBuffer(&stagingBuffer, &instanceBuffer, queue);
 
 		stagingBuffer.destroy();
-
+#if 0
 		// Shader storage buffer containing index offsets and counts for the LODs
 		struct LOD
 		{
@@ -505,7 +515,7 @@ public:
 		vulkanDevice->copyBuffer(&stagingBuffer, &compute.lodLevelsBuffers, queue);
 
 		stagingBuffer.destroy();
-
+#endif
 		// Scene uniform buffer
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -602,12 +612,12 @@ public:
 				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 				3,
 				&indirectDrawCountBuffer.descriptor),
-			// Binding 4: LOD info
+			// Binding 4: Indirect instance ids output buffer
 			vks::initializers::writeDescriptorSet(
 				compute.descriptorSet,
 				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 				4,
-				&compute.lodLevelsBuffers.descriptor)
+				&indirectInstanceIdsBuffer.descriptor),
 		};
 
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(computeWriteDescriptorSets.size()), computeWriteDescriptorSets.data(), 0, NULL);

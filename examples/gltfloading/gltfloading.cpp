@@ -296,7 +296,7 @@ public:
 						return;
 					}
 				}
-				sections.push_back({ firstIndex, indexCount, (uint32_t)materials[glTFPrimitive.material].baseColorTextureIndex });
+				sections.push_back({ firstIndex/3, indexCount/3, (uint32_t)materials[glTFPrimitive.material].baseColorTextureIndex });
 			}
 		}
 	}
@@ -312,7 +312,7 @@ public:
 		VkDeviceSize offsets[1] = { 0 };
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertices.buffer, offsets);
 		vkCmdBindIndexBuffer(commandBuffer, indices.buffer, 0, VK_INDEX_TYPE_UINT32);
-		vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer, 0, (uint32_t)materials.size(), sizeof(VkDrawIndexedIndirectCommand));
+		vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
 	}
 };
 
@@ -548,11 +548,11 @@ public:
 			}
 		}
 		createBuffer(0, 0, &sectionBuffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sections.size() * sizeof(VulkanglTFModel::SectionData), sections.data());
-		std::vector<VkDrawIndexedIndirectCommand> commands(SectionCount);
-		for (int i = 0; i < SectionCount; i++)
+		std::vector<VkDrawIndexedIndirectCommand> commands(1);
+		for (int i = 0; i < 1; i++)
 		{
-			commands[i].firstIndex = sections[i].StartPrimitive;
-			commands[i].indexCount = sections[i].PrimitiveCount;
+			commands[i].firstIndex = 0;
+			commands[i].indexCount = indexBuffer.size();
 			commands[i].firstInstance = 0;
 			commands[i].instanceCount = (uint32_t)instances.size();
 			commands[i].vertexOffset = 0;

@@ -59,8 +59,7 @@ SectionData GetSection(uint MeshId, uint PrimitiveId)
 
 void main() 
 {
-    SectionData section = sections[inIds.x];
-//  GetSection(0, gl_PrimitiveID);
+    SectionData section = GetSection(0, gl_PrimitiveID);
     vec4 color = texture(samplerColorMap[section.TextureIndex], inUV) * vec4(inColor, 1.0);
 
 	vec3 N = normalize(inNormal);

@@ -2,12 +2,10 @@
 
 struct VSInput
 {
+    uint InstanceId : SV_InstanceID;
 [[vk::location(0)]] float4 Pos : POSITION0;
 [[vk::location(1)]] float3 Normal : NORMAL0;
 [[vk::location(2)]] float3 Color : COLOR0;
-// Instanced attributes
-[[vk::location(4)]] float3 instancePos : TEXCOORD0;
-[[vk::location(5)]] float instanceScale : TEXCOORD1;
 };
 
 struct UBO
@@ -18,6 +16,15 @@ struct UBO
 
 cbuffer ubo : register(b0) { UBO ubo; }
 
+struct InstanceData
+{
+    float3 pos;
+    uint idx;
+};
+
+StructuredBuffer<InstanceData> instances : register(t2);
+StructuredBuffer<uint> ids : register(t3);
+
 struct VSOutput
 {
 	float4 Pos : SV_POSITION;
@@ -25,16 +32,22 @@ struct VSOutput
 [[vk::location(1)]] float3 Color : COLOR0;
 [[vk::location(2)]] float3 ViewVec : TEXCOORD1;
 [[vk::location(3)]] float3 LightVec : TEXCOORD2;
+[[vk::location(4)]] float2 UV : TEXCOORD3;
+[[vk::location(5)]] uint InstanceId : TEXCOORD4;
+	
 };
 
 VSOutput main(VSInput input)
 {
 	VSOutput output = (VSOutput)0;
+    output.UV = input.Pos.xy;
 	output.Color = input.Color;
-
 	output.Normal = input.Normal;
+    output.InstanceId = input.InstanceId;
 
-	float4 pos = float4((input.Pos.xyz * input.instanceScale) + input.instancePos, 1.0);
+    uint idx = ids[input.InstanceId];
+	
+    float4 pos = float4((input.Pos.xyz * 1.f) + instances[idx].pos, 1.0);
 
 	output.Pos = mul(ubo.projection, mul(ubo.modelview, pos));
 

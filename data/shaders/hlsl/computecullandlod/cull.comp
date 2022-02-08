@@ -6,7 +6,10 @@
 struct InstanceData
 {
 	float3 pos;
-	float scale;
+	float radius;
+	uint tex;
+	uint start;
+	uint count;
 };
 
 StructuredBuffer<InstanceData> instances : register(t0);
@@ -41,17 +44,7 @@ struct UBOOut
 	uint lodCount[MAX_LOD_LEVEL_COUNT];
 };
 RWStructuredBuffer<UBOOut> uboOut : register(u3);
-
-// Binding 4: level-of-detail information
-struct LOD
-{
-	uint firstIndex;
-	uint indexCount;
-	float distance;
-	float _pad0;
-};
-
-StructuredBuffer<LOD> lods : register(t4);
+RWStructuredBuffer<uint> ids : register(u4);
 
 [numthreads(16, 1, 1)]
 bool frustumCheck(float4 pos, float radius)
@@ -88,28 +81,12 @@ void main(uint3 GlobalInvocationID : SV_DispatchThreadID )
 	// Check if object is within current viewing frustum
 	if (frustumCheck(pos, 1.0))
 	{
-		indirectDraws[idx].instanceCount = 1;
-
-		// Increase number of indirect draw counts
 		InterlockedAdd(uboOut[0].drawCount, 1, temp);
-
-		// Select appropriate LOD level based on distance to camera
-		uint lodLevel = MAX_LOD_LEVEL;
-		for (uint i = 0; i < MAX_LOD_LEVEL; i++)
-		{
-			if (distance(instances[idx].pos.xyz, ubo.cameraPos.xyz) < lods[i].distance)
-			{
-				lodLevel = i;
-				break;
-			}
-		}
-		indirectDraws[idx].firstIndex = lods[lodLevel].firstIndex;
-		indirectDraws[idx].indexCount = lods[lodLevel].indexCount;
-		// Update stats
-		InterlockedAdd(uboOut[0].lodCount[lodLevel], 1, temp);
-	}
-	else
-	{
-		indirectDraws[idx].instanceCount = 0;
+        uint lod = uint(floor(distance(instances[idx].pos.xyz, ubo.cameraPos.xyz) / 5.f));
+        uint countIndex;
+        InterlockedAdd(indirectDraws[lod].instanceCount, 1, countIndex);
+        uint instanceIndex = indirectDraws[lod].firstInstance + countIndex;
+        ids[instanceIndex] = idx;
+        InterlockedAdd(uboOut[0].lodCount[lod], 1, temp);
 	}
 }
